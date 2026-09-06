@@ -18,7 +18,7 @@ import numpy as np
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from dataset import build_distractor_dataset
+from dataset import DOMAINS, build_distractor_dataset
 from steer import Steerer, classify_answer, generate_answer
 
 
@@ -34,6 +34,10 @@ def main():
                               ".npz (e.g. rollout_activations.npz) instead of firing every token.")
     parser.add_argument("--max_examples", type=int, default=None,
                          help="Cap the number of distractor examples checked (default: all).")
+    parser.add_argument("--domains", nargs="+", choices=DOMAINS, default=["capitals"],
+                         help="Which fact domain(s) to demo on (default: capitals, matching the "
+                              "README's documented numbers). Pass e.g. --domains animals to test "
+                              "a direction trained on a different domain than it's evaluated on.")
     args = parser.parse_args()
 
     if args.quant == "none":
@@ -63,15 +67,16 @@ def main():
         X, y = gate_data[f"layer_{args.layer}"], gate_data["labels"]
         gate_clf = LogisticRegression(max_iter=2000, C=1.0).fit(X, y)
 
-    examples = build_distractor_dataset()
+    examples = build_distractor_dataset(domains=args.domains)
     if args.max_examples:
         examples = examples[: args.max_examples]
 
-    print(f"\nGenerating baseline (no steering) answers for {len(examples)} distractor-primed prompts...")
+    print(f"\nGenerating baseline (no steering) answers for {len(examples)} distractor-primed prompts "
+          f"(domains={args.domains})...")
     baseline = []
     for ex in examples:
         ans = generate_answer(model, tokenizer, ex["prompt_distractor"])
-        correct, confused = classify_answer(ans, ex["capital"], ex["distractor_capital"])
+        correct, confused = classify_answer(ans, ex["correct_answer"], ex["wrong_answer"])
         baseline.append((ex, ans, correct, confused))
 
     wrong_baseline = [(ex, ans, confused) for ex, ans, correct, confused in baseline if not correct]
@@ -85,10 +90,10 @@ def main():
     n_fixed = 0
     for ex, base_ans, base_confused in wrong_baseline:
         steered_ans = generate_answer(model, tokenizer, ex["prompt_distractor"])
-        correct, confused = classify_answer(steered_ans, ex["capital"], ex["distractor_capital"])
+        correct, confused = classify_answer(steered_ans, ex["correct_answer"], ex["wrong_answer"])
         n_fixed += correct
         tag = "FIXED" if correct else ("STILL CONFUSED" if confused else "STILL WRONG")
-        print(f"[{ex['country']}] (false premise: capital is {ex['distractor_capital']})")
+        print(f"[{ex['item']}] (false premise: {ex['wrong_answer']})")
         print(f"  Without steering: {base_ans!r:30s} {'[CONFUSED]' if base_confused else '[WRONG]'}")
         print(f"  With steering:    {steered_ans!r:30s} [{tag}]")
         print()
@@ -102,9 +107,9 @@ def main():
     n_ok = 0
     for ex in sample:
         ans = generate_answer(model, tokenizer, ex["prompt_plain"])
-        correct, _ = classify_answer(ans, ex["capital"], ex["distractor_capital"])
+        correct, _ = classify_answer(ans, ex["correct_answer"], ex["wrong_answer"])
         n_ok += correct
-        print(f"  {ex['country']:12s} -> {ans!r:20s} {'[OK]' if correct else '[WRONG]'}")
+        print(f"  {ex['item']:14s} -> {ans!r:20s} {'[OK]' if correct else '[WRONG]'}")
     steerer.remove()
     print(f"{n_ok}/{len(sample)} plain prompts still correct with steering on "
           f"(should match the no-steering baseline -- steering shouldn't break what already works).")

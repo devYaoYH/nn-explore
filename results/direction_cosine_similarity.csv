@@ -1,0 +1,8 @@
+model,layer,layer_pct,dir_a,dir_b,cosine
+Qwen/Qwen2.5-1.5B-Instruct,3,10.7,capitals,animals,0.085
+Qwen/Qwen2.5-1.5B-Instruct,6,21.4,capitals,animals,0.050
+Qwen/Qwen2.5-1.5B-Instruct,9,32.1,capitals,animals,0.103
+Qwen/Qwen2.5-1.5B-Instruct,12,42.9,capitals,animals,0.113
+Qwen/Qwen2.5-1.5B-Instruct,15,53.6,capitals,animals,0.159
+Qwen/Qwen2.5-1.5B-Instruct,18,64.3,capitals,animals,0.192
+Qwen/Qwen2.5-1.5B-Instruct,21,75.0,capitals,animals,0.081

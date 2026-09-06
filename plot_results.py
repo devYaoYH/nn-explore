@@ -7,6 +7,7 @@ import os
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 
 RESULTS_DIR = "results"
@@ -141,6 +142,57 @@ def plot_rollout_steering_sweep():
     )
 
 
+def plot_cross_domain_generalization():
+    path = os.path.join(RESULTS_DIR, "cross_domain_generalization.csv")
+    if not os.path.exists(path):
+        return
+    df = pd.read_csv(path)
+    df["condition"] = df["direction_domain"] + " dir\n-> " + df["eval_domain"] + " eval"
+    conditions = df["condition"].unique()
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    x = np.arange(len(conditions))
+    width = 0.35
+    baseline = [df[(df["condition"] == c) & (df["coeff"] == 0.0)]["distractor_correct"].iloc[0]
+                / df[(df["condition"] == c) & (df["coeff"] == 0.0)]["distractor_total"].iloc[0]
+                for c in conditions]
+    steered = [df[(df["condition"] == c) & (df["coeff"] != 0.0)]["distractor_correct"].iloc[0]
+               / df[(df["condition"] == c) & (df["coeff"] != 0.0)]["distractor_total"].iloc[0]
+               for c in conditions]
+    ax.bar(x - width / 2, baseline, width, label="baseline (coeff=0)")
+    ax.bar(x + width / 2, steered, width, label="steered (best coeff)")
+    ax.set_xticks(x)
+    ax.set_xticklabels(conditions)
+    ax.set_ylabel("Distractor-prompt accuracy")
+    ax.set_ylim(0, 1.05)
+    ax.set_title("Steering only helps within its own training domain")
+    ax.legend()
+    fig.tight_layout()
+    out = os.path.join(FIG_DIR, "cross_domain_generalization.png")
+    fig.savefig(out, dpi=150)
+    print(f"Saved {out}")
+
+
+def plot_direction_cosine_similarity():
+    path = os.path.join(RESULTS_DIR, "direction_cosine_similarity.csv")
+    if not os.path.exists(path):
+        return
+    df = pd.read_csv(path)
+    fig, ax = plt.subplots(figsize=(7, 4.5))
+    for (dir_a, dir_b), g in df.groupby(["dir_a", "dir_b"]):
+        g = g.sort_values("layer_pct")
+        ax.plot(g["layer_pct"], g["cosine"], marker="o", label=f"cos({dir_a}, {dir_b})")
+    ax.axhline(0.0, color="gray", linestyle="--", linewidth=1, label="orthogonal")
+    ax.set_xlabel("Layer depth (% of network)")
+    ax.set_ylabel("Cosine similarity between domain directions")
+    ax.set_title("Small shared component, growing with depth -- but far from aligned")
+    ax.set_ylim(-0.1, 0.4)
+    ax.legend()
+    fig.tight_layout()
+    out = os.path.join(FIG_DIR, "direction_cosine_similarity.png")
+    fig.savefig(out, dpi=150)
+    print(f"Saved {out}")
+
+
 if __name__ == "__main__":
     plot_probe_auroc()
     plot_causal_patch()
@@ -148,3 +200,5 @@ if __name__ == "__main__":
     plot_steering_sweep()
     plot_rollout_probe_auroc()
     plot_rollout_steering_sweep()
+    plot_cross_domain_generalization()
+    plot_direction_cosine_similarity()

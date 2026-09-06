@@ -17,7 +17,7 @@ import numpy as np
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from dataset import build_distractor_dataset
+from dataset import DOMAINS, build_distractor_dataset
 
 
 def strip_accents(s):
@@ -77,10 +77,10 @@ def generate_answer(model, tokenizer, question_text, max_new_tokens=12):
     return tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
 
 
-def classify_answer(generated, capital, distractor_capital):
+def classify_answer(generated, correct_answer, wrong_answer):
     g = strip_accents(generated.lower())
-    correct = bool(re.search(r"\b" + re.escape(strip_accents(capital.lower())) + r"\b", g))
-    confused = bool(re.search(r"\b" + re.escape(strip_accents(distractor_capital.lower())) + r"\b", g))
+    correct = bool(re.search(r"\b" + re.escape(strip_accents(correct_answer.lower())) + r"\b", g))
+    confused = bool(re.search(r"\b" + re.escape(strip_accents(wrong_answer.lower())) + r"\b", g))
     return correct, confused
 
 
@@ -95,6 +95,10 @@ def main():
                          help="If set, path to raw activations .npz (from extract_and_probe.py --out) "
                               "used to fit a live gating probe at --layer -- steering only fires when "
                               "the probe predicts the current step is leaning false.")
+    parser.add_argument("--domains", nargs="+", choices=DOMAINS, default=["capitals"],
+                         help="Which fact domain(s) to evaluate on (default: capitals, matching the "
+                              "README's documented numbers). Use a domain different from the one the "
+                              "direction was trained on to test transfer.")
     args = parser.parse_args()
 
     if args.quant == "none":
@@ -130,7 +134,8 @@ def main():
         print(f"Fit live gating probe on layer {args.layer} ({len(y)} examples, "
               f"train accuracy {gate_clf.score(X, y):.3f})")
 
-    examples = build_distractor_dataset()
+    examples = build_distractor_dataset(domains=args.domains)
+    print(f"Evaluating on domains: {args.domains} ({len(examples)} examples)")
 
     for coeff in args.coeffs:
         steerer = Steerer(model, args.layer, direction, coeff, gate_clf=gate_clf)
@@ -139,12 +144,12 @@ def main():
         for ex in examples:
             ans_plain = generate_answer(model, tokenizer, ex["prompt_plain"])
             ans_distr = generate_answer(model, tokenizer, ex["prompt_distractor"])
-            c_plain, _ = classify_answer(ans_plain, ex["capital"], ex["distractor_capital"])
-            c_distr, conf_distr = classify_answer(ans_distr, ex["capital"], ex["distractor_capital"])
+            c_plain, _ = classify_answer(ans_plain, ex["correct_answer"], ex["wrong_answer"])
+            c_distr, conf_distr = classify_answer(ans_distr, ex["correct_answer"], ex["wrong_answer"])
             n_correct_plain += c_plain
             n_correct_distractor += c_distr
             n_confused_distractor += conf_distr
-            rows.append((ex["country"], ans_plain, c_plain, ans_distr, c_distr, conf_distr))
+            rows.append((ex["item"], ans_plain, c_plain, ans_distr, c_distr, conf_distr))
         steerer.remove()
 
         n = len(examples)
@@ -154,9 +159,9 @@ def main():
                   f"({100 * steerer.n_fired / max(1, steerer.n_calls):.1f}%)")
         print(f"Plain prompt accuracy:      {n_correct_plain}/{n}")
         print(f"Distractor prompt accuracy: {n_correct_distractor}/{n}  (confused->distractor: {n_confused_distractor}/{n})")
-        for country, ans_plain, c_plain, ans_distr, c_distr, conf_distr in rows:
+        for item, ans_plain, c_plain, ans_distr, c_distr, conf_distr in rows:
             flag = "OK" if c_distr else ("CONFUSED" if conf_distr else "WRONG")
-            print(f"  {country:12s} plain={ans_plain!r:20s} distractor={ans_distr!r:20s} [{flag}]")
+            print(f"  {item:14s} plain={ans_plain!r:20s} distractor={ans_distr!r:20s} [{flag}]")
 
 
 if __name__ == "__main__":

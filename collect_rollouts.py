@@ -37,7 +37,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 
-from dataset import build_distractor_dataset
+from dataset import DOMAINS, build_distractor_dataset
 from steer import SYSTEM_PROMPT, classify_answer
 from extract_continuation_probe import get_target_layers, grouped_train_test_split
 
@@ -93,17 +93,19 @@ def sample_rollout(model, tokenizer, question_text, temperature, max_new_tokens)
     return tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
 
 
-def build_prompts():
-    """Plain + distractor prompts from the same country/capital set steer.py
-    evaluates against, so this training data and that eval set are directly
-    comparable."""
-    examples = build_distractor_dataset()
+def build_prompts(domains):
+    """Plain + distractor prompts from the same fact set steer.py evaluates
+    against, so this training data and that eval set are directly
+    comparable. `domains` controls which fact domain(s) to draw from --
+    restrict to one domain to test whether a direction trained there
+    generalizes to others (see README)."""
+    examples = build_distractor_dataset(domains=domains)
     prompts = []
     for ex in examples:
         for kind, text in [("plain", ex["prompt_plain"]), ("distractor", ex["prompt_distractor"])]:
             prompts.append({
-                "prompt_id": len(prompts), "kind": kind, "text": text,
-                "capital": ex["capital"], "distractor_capital": ex["distractor_capital"],
+                "prompt_id": len(prompts), "kind": kind, "text": text, "domain": ex["domain"],
+                "correct_answer": ex["correct_answer"], "wrong_answer": ex["wrong_answer"],
             })
     return prompts
 
@@ -141,6 +143,10 @@ def main():
     parser.add_argument("--results_csv", default=None)
     parser.add_argument("--rollouts_jsonl", default=None,
                          help="If set, dump every rollout's text + label here for inspection.")
+    parser.add_argument("--domains", nargs="+", choices=DOMAINS, default=["capitals"],
+                         help="Which fact domain(s) to collect rollouts from (default: capitals, "
+                              "matching the README's documented numbers). Restrict to one domain "
+                              "to test whether the resulting direction generalizes to others.")
     args = parser.parse_args()
 
     if args.quant == "none":
@@ -164,7 +170,8 @@ def main():
     target_layers = args.layers or get_target_layers(n_layers)
     print(f"Model has {n_layers} layers. Recording layers: {target_layers}")
 
-    prompts = build_prompts()
+    prompts = build_prompts(args.domains)
+    print(f"Domains: {args.domains}")
     print(f"{len(prompts)} prompts x {args.samples_per_prompt} samples = "
           f"{len(prompts) * args.samples_per_prompt} rollouts to generate "
           f"(temperature={args.temperature}, max_new_tokens={args.max_new_tokens})")
@@ -183,7 +190,7 @@ def main():
             for r in recorders.values():
                 r.reset()
             text = sample_rollout(model, tokenizer, p["text"], args.temperature, args.max_new_tokens)
-            correct, confused = classify_answer(text, p["capital"], p["distractor_capital"])
+            correct, confused = classify_answer(text, p["correct_answer"], p["wrong_answer"])
             label = 1 if correct else 0
 
             n_tok = recorders[target_layers[0]].stacked().shape[0]

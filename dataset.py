@@ -129,35 +129,91 @@ def build_steering_dataset(seed=0):
     return examples
 
 
-def build_distractor_dataset(seed=0):
-    """Entity-confusion prompts for the steering evaluation.
+def _article(word):
+    return "an" if word[0].lower() in "aeiou" else "a"
 
-    Each example asks about one country's capital but primes a *different*
-    country's capital in the preceding context -- a known, reproducible way
-    to induce genuine entity-confusion errors (context interference /
-    recency bias) even in a model that knows every fact individually. This
-    is the live-generation analogue of the France/Germany causal-patching
-    demo: the same two competing facts, but the "corruption" comes from a
-    naturalistic prompt instead of an oracle activation injection.
+
+DOMAINS = ("capitals", "elements", "math", "animals")
+
+
+def build_distractor_dataset(seed=0, domains=DOMAINS):
+    """Entity-confusion prompts for the steering evaluation, generalized
+    across all four fact domains in this file (not just capitals).
+
+    Each example asks a factual question but primes a *plausible-but-wrong*
+    answer to that same question in the preceding context -- a known,
+    reproducible way to induce genuine confusion/override errors (context
+    interference / recency bias / sycophancy) even in a model that knows the
+    fact individually. This is the live-generation analogue of the
+    France/Germany causal-patching demo: the same two competing facts, but
+    the "corruption" comes from a naturalistic prompt instead of an oracle
+    activation injection.
+
+    Every example has the same generic shape regardless of domain --
+    {domain, item, correct_answer, wrong_answer, prompt_plain,
+    prompt_distractor} -- so consumers (collect_rollouts.py, steer.py,
+    demo_steering.py) don't need any domain-specific logic. This matters for
+    testing whether a steering direction trained on one domain (e.g.
+    capitals) generalizes to another (e.g. animals) it never saw in
+    training, or whether it's actually domain-specific -- see README §5.
     """
     rng = random.Random(seed)
     examples = []
-    countries = list(CAPITALS) + list(HARD_CAPITALS)
-    for i, (country, capital) in enumerate(countries):
-        distractor_country, distractor_capital = rng.choice(
-            [c for c in countries if c[0] != country]
-        )
-        examples.append({
-            "country": country,
-            "capital": capital,
-            "distractor_country": distractor_country,
-            "distractor_capital": distractor_capital,
-            "prompt_plain": f"Question: What is the capital of {country}?",
-            "prompt_distractor": (
-                f"Context: I just learned that the capital of {country} is {distractor_capital}.\n"
-                f"Question: What is the capital of {country}?"
-            ),
-        })
+
+    if "capitals" in domains:
+        countries = list(CAPITALS) + list(HARD_CAPITALS)
+        for country, capital in countries:
+            wrong = rng.choice([c for c in countries if c[0] != country])[1]
+            examples.append({
+                "domain": "capitals", "item": country,
+                "correct_answer": capital, "wrong_answer": wrong,
+                "prompt_plain": f"Question: What is the capital of {country}?",
+                "prompt_distractor": (
+                    f"Context: I just learned that the capital of {country} is {wrong}.\n"
+                    f"Question: What is the capital of {country}?"
+                ),
+            })
+
+    if "elements" in domains:
+        for name, symbol in ELEMENTS:
+            wrong = rng.choice([s for _, s in ELEMENTS if s != symbol])
+            examples.append({
+                "domain": "elements", "item": name,
+                "correct_answer": symbol, "wrong_answer": wrong,
+                "prompt_plain": f"Question: What is the chemical symbol for {name}?",
+                "prompt_distractor": (
+                    f"Context: I just learned that the chemical symbol for {name} is {wrong}.\n"
+                    f"Question: What is the chemical symbol for {name}?"
+                ),
+            })
+
+    if "math" in domains:
+        for a, b, correct in MATH:
+            wrong = correct + rng.choice([-2, -1, 1, 2, 3, -3])
+            examples.append({
+                "domain": "math", "item": f"{a} times {b}",
+                "correct_answer": str(correct), "wrong_answer": str(wrong),
+                "prompt_plain": f"Question: What is {a} times {b}?",
+                "prompt_distractor": (
+                    f"Context: I just learned that {a} times {b} equals {wrong}.\n"
+                    f"Question: What is {a} times {b}?"
+                ),
+            })
+
+    if "animals" in domains:
+        for subject, correct_class in ANIMALS:
+            wrong = rng.choice([c for _, c in ANIMALS if c != correct_class])
+            subj = subject.lower()
+            examples.append({
+                "domain": "animals", "item": subject,
+                "correct_answer": correct_class, "wrong_answer": wrong,
+                "prompt_plain": f"Question: What kind of animal is {subj}?",
+                "prompt_distractor": (
+                    f"Context: I just learned that {subj} is {_article(wrong)} {wrong}.\n"
+                    f"Question: What kind of animal is {subj}?"
+                ),
+            })
+
     return examples
 
 

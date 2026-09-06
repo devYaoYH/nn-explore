@@ -233,6 +233,65 @@ distribution instead of a proxy for it. The gate's fire-rate drop alone
 rather than just luckily thresholded. Still a toy-scale result (37 examples,
 one model, one layer) — see Future Work for what's next.
 
+### 5. Is this generalized truthfulness, or a capitals-specific fix?
+
+A fair objection to §4: everything so far — training data and eval alike —
+is country capitals. Fixing "resist a false premise about a country's
+capital" isn't the same as finding a domain-general "is this claim true"
+direction; it could just as easily be "ignore context that contradicts a
+memorized country→capital mapping," a much narrower skill. `dataset.py`'s
+`build_distractor_dataset()` (and every consumer downstream of it) was
+generalized to a `{domain, item, correct_answer, wrong_answer,
+prompt_plain, prompt_distractor}` shape spanning all four fact domains in
+this repo — capitals, chemical symbols, multiplication, animal taxonomic
+class — specifically to test this (`--domains` on `collect_rollouts.py`,
+`steer.py`, and `demo_steering.py` selects which domain(s) to use; default
+is `capitals` alone, to keep §4's numbers reproducible unmodified).
+
+Three conditions, all measured with the same refactored `steer.py` so
+they're directly comparable:
+
+![Cross-domain generalization](results/figures/cross_domain_generalization.png)
+
+| Condition | Baseline → steered | Net effect |
+|---|---|---|
+| Capitals direction → capitals eval (§4, same numbers as before the refactor — confirmed byte-identical) | 31/37 → 35/37, confused 4→1 | Clean win, zero regressions |
+| Capitals direction → **animals** eval (zero-shot transfer) | 5/10 → 5/10, confused 5→4 | **Net zero** — one example (`frog`) gets fixed, but a *previously-correct* example (`snake`) gets newly broken. Confusion count alone made it look like a small win; per-example inspection shows it's a wash. |
+| Animals-only direction (same recipe as §4, applied to its own domain) → animals eval | 5/10 → 6/10, confused 5→4 | Small clean win (one fix, zero regressions), but far weaker than capitals' effect size |
+
+The **animals-in-domain result is the important one**: the on-policy
+rollout recipe does still work when pointed at a new domain (a genuine,
+regression-free improvement), so §4's fix isn't capitals-specific *by
+construction*. But the effect is much smaller than capitals' — plausibly
+because the animals training set is far smaller (10 questions / 4 matched
+pairs vs. capitals' 37 questions / 8 pairs) and its distractor premise is a
+blunter direct contradiction ("I just learned that a dog is a reptile")
+than a geography fact. The **capitals→animals transfer result is the
+negative one**: the specific vector learned from capitals data does not
+carry over to a domain it never saw, even though it's the same "kind" of
+task (resist a false premise, answer correctly).
+
+Cosine similarity between the two directions, layer by layer, gives a
+mechanistic reading on why:
+
+![Direction cosine similarity](results/figures/direction_cosine_similarity.png)
+
+In a ~1536-dim residual stream, two unrelated random vectors would sit near
+cosine 0 (std ≈ 0.026), so a similarity of 0.05–0.19 is a real signal, not
+noise — but it's small, and it **grows with depth, peaking at layer 18**
+(0.192), the same layer where capitals steering works best. Reading: there
+*is* a modest shared component — consistent with some genuine
+domain-general "truthfulness-ish" direction existing and strengthening
+through the network — but it's dominated by domain-specific structure (which
+fact, which surface form), which is exactly why zero-shot transfer is weak
+rather than either working cleanly or being pure noise.
+
+**Bottom line:** §4 is a real fix for the *train/deploy distribution*
+mismatch, not a demonstration of generalized truthfulness. Getting the
+latter, if it exists as a clean linear feature at all, needs multi-domain
+joint training (do many domains share enough of that small common
+component to average out the domain-specific noise?) — see Future Work.
+
 ## Repo layout
 
 ```
@@ -325,6 +384,16 @@ python steer.py --model Qwen/Qwen2.5-1.5B-Instruct --quant none \
 # 9. Proof-of-concept: direct before/after generations on the same prompts
 python demo_steering.py --model Qwen/Qwen2.5-1.5B-Instruct --quant none \
     --directions /tmp/rollout_directions.npz --layer 18 --coeff 1.0
+
+# 10. Cross-domain generalization check (§5) -- collect a domain-specific
+# direction and check both in-domain and zero-shot transfer.
+python collect_rollouts.py --model Qwen/Qwen2.5-1.5B-Instruct --quant none \
+    --domains animals --samples_per_prompt 8 --max_new_tokens 16 --layers 9 \
+    --out /tmp/rollout_activations_animals.npz --directions_out /tmp/rollout_directions_animals.npz
+python steer.py --model Qwen/Qwen2.5-1.5B-Instruct --quant none --domains animals \
+    --directions /tmp/rollout_directions_animals.npz --layer 9 --coeffs 0.0 1.0        # in-domain
+python steer.py --model Qwen/Qwen2.5-1.5B-Instruct --quant none --domains animals \
+    --directions /tmp/rollout_directions.npz --layer 18 --coeffs 0.0 1.0               # zero-shot transfer
 ```
 
 `--quant` has three modes:
@@ -355,11 +424,18 @@ experiments progressed:
 - `build_dataset()` — 104 static true/false statement pairs (§1, §2 inputs).
 - `build_steering_dataset()` — the same facts recast as `(prompt,
   true_continuation, false_continuation)` triples for teacher-forcing (§3a).
-- `build_distractor_dataset()` — 37 capital-city questions (20 common +
-  `HARD_CAPITALS`, 17 deliberately less-known ones) each paired with a
-  false-premise distractor context, for the live steering evaluation (§3b).
+- `build_distractor_dataset(domains=...)` — factual questions across all
+  four domains (`DOMAINS = ("capitals", "elements", "math", "animals")`,
+  default), each paired with a false-premise distractor context, for the
+  live steering evaluation (§3b) and the cross-domain generalization check
+  (§5). Every example has the same generic shape (`domain`, `item`,
+  `correct_answer`, `wrong_answer`, `prompt_plain`, `prompt_distractor`)
+  regardless of domain, so `collect_rollouts.py`/`steer.py`/
+  `demo_steering.py` need no domain-specific logic — pass `--domains` to
+  restrict which one(s) to use (default: `capitals` alone, matching §4's
+  documented numbers).
 - `CAPITALS` / `HARD_CAPITALS` / `ELEMENTS` / `MATH` / `ANIMALS` — the
-  underlying fact lists all four generators draw from.
+  underlying fact lists all generators draw from.
 
 This is a toy stand-in for a real contrastive dataset — swap in something
 closer to your actual research question (e.g. the honest-vs-deceptive
@@ -370,31 +446,38 @@ when you're ready to move past pipeline validation.
 ## Future work
 
 §4 closed the loop on §3's negative result — on-policy rollout training does
-fix live steering — but it's still a toy-scale demonstration. Natural next
-steps:
+fix live steering — and §5 showed that fix is domain-specific rather than a
+generalized truthfulness direction, though a small (~0.05-0.19 cosine)
+shared component does exist and grows with depth. Natural next steps:
 
-1. **Replicate §4 at 32B scale.** All of §3–§4's results are on Qwen2.5-1.5B
-   only, for iteration speed. Check whether the fix holds, and whether a
-   larger model needs a smaller/larger relative coefficient or fewer/more
-   samples per prompt to get enough matched contrastive pairs.
-2. **More matched pairs.** Only 8 of the ~52 training-split prompts yielded
-   both a correct and incorrect rollout at `samples_per_prompt=8`; either
-   raising the sample count or widening the fact set (more long-tail
-   capitals, or a genuinely open-ended trivia set) would give the paired
-   diff-of-means a lower-variance estimate.
-3. **Beyond induced distractors.** The whole eval set relies on a
+1. **Multi-domain joint training.** Collect rollouts across all four domains
+   combined and train one direction on the pooled data. If domains share
+   enough of that small common component, joint training should average out
+   the domain-specific noise and produce something closer to general;
+   if it doesn't help, that's further evidence there's no single linear
+   "truthfulness" feature at this scale worth chasing.
+2. **Replicate §4-§5 at 32B scale.** All results so far are on Qwen2.5-1.5B
+   only, for iteration speed. Check whether the domain-specificity finding
+   holds, or whether a larger model shares more cross-domain structure.
+3. **More matched pairs.** Only 8 of the ~52 capitals training-split prompts
+   (and just 4 of ~15 for animals) yielded both a correct and incorrect
+   rollout at `samples_per_prompt=8`; either raising the sample count or
+   widening the fact set would give the paired diff-of-means a
+   lower-variance estimate, and animals in particular would benefit --
+   its effect size was much noisier than capitals' with the same recipe.
+4. **Beyond induced distractors.** The whole eval set relies on a
    confidently-asserted false premise to induce errors. Check whether the
    same recipe (real rollouts, auto-verified, mean-pooled + paired
    diff-of-means) also produces a working steering direction for
    *naturally occurring* hallucinations (no induced distractor context) —
    this needs a harder/larger question set to get a usable natural error
    rate, but is a more realistic target than entity-confusion.
-4. Swap the toy capitals/elements/math dataset for something closer to a real
+5. Swap the toy capitals/elements/math dataset for something closer to a real
    research question — e.g. the honest-vs-deceptive instruction-following
    setup from
    ["Detecting Strategic Deception Using Linear Probes"](https://alignment.anthropic.com/2024/deception-probes/) —
    now that the full pipeline (rollout collection → on-policy direction →
-   live steering) is validated end-to-end on a toy task.
+   live steering → cross-domain check) is validated end-to-end on a toy task.
 
 ## Environment notes (read before bootstrapping a new instance)
 

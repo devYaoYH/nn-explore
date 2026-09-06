@@ -1,0 +1,7 @@
+model,direction_domain,eval_domain,layer,coeff,plain_correct,plain_total,distractor_correct,distractor_total,confused
+Qwen/Qwen2.5-1.5B-Instruct,capitals,capitals,18,0.0,36,37,31,37,4
+Qwen/Qwen2.5-1.5B-Instruct,capitals,capitals,18,1.0,36,37,35,37,1
+Qwen/Qwen2.5-1.5B-Instruct,capitals,animals,18,0.0,8,10,5,10,5
+Qwen/Qwen2.5-1.5B-Instruct,capitals,animals,18,1.0,8,10,5,10,4
+Qwen/Qwen2.5-1.5B-Instruct,animals,animals,9,0.0,8,10,5,10,5
+Qwen/Qwen2.5-1.5B-Instruct,animals,animals,9,1.0,8,10,6,10,4
