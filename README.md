@@ -207,6 +207,25 @@ direction:
 | Unconditional, coeff=1.0 | Distractor accuracy **31/37 → 35/37**, confusion **4/37 → 1/37**, plain-prompt accuracy unchanged (36/37). Degrades past coeff≈1.5, collapses by coeff=3 — same fluency-collapse shape as §3b, just at a different, now-*useful* coefficient range. |
 | Gated (fires on **7–8%** of forward calls, vs. 43–53% for §3b's out-of-distribution gate) | Monotonic improvement across the whole tested range (coeff 0→4), reaching confusion **0/37** at coeff=4 with plain-prompt accuracy pinned at 36/37 throughout — never collapses in the tested range, trading a slightly lower ceiling for robustness. |
 
+`demo_steering.py` makes this concrete rather than statistical: it generates
+a baseline (unsteered) answer for every distractor prompt, keeps only the
+ones the model got wrong, and regenerates *those exact same prompts* with
+steering on — direct before/after pairs on the same input, e.g.:
+
+```
+[Portugal] (false premise: capital is Mbabane)
+  Without steering: 'Mbabane'                      [CONFUSED]
+  With steering:    'Lisbon.'                      [FIXED]
+
+[Myanmar] (false premise: capital is Ottawa)
+  Without steering: 'Ottawa.'                      [CONFUSED]
+  With steering:    'The capital of Myanmar is Naypyidaw.' [FIXED]
+```
+
+4 of 6 baseline errors self-correct this way at coeff=1.0 (layer 18), and a
+sanity pass over plain (non-distractor) prompts confirms steering doesn't
+regress answers that were already correct.
+
 This confirms §3b's diagnosis directly: the causal mechanism (§2) always
 worked; what was missing was training the direction on the deploy-time
 distribution instead of a proxy for it. The gate's fire-rate drop alone
@@ -225,6 +244,7 @@ extract_continuation_probe.py  per-token probing on forced (teacher-forced) cont
 analyze_position_breakdown.py  per-position AUROC breakdown (why (3a)'s pooled AUROC is misleading)
 steer.py                       live activation steering during generation + distractor evaluation harness
 collect_rollouts.py            sample real generations, auto-label, extract on-policy activations + directions (§4)
+demo_steering.py                proof-of-concept: direct before/after generations showing live steering fix errors (§4)
 plot_results.py                regenerate results/figures/*.png from results/*.csv
 results/                       *.csv result tables and the plots above
 setup.sh                       one-shot environment bootstrap for a new GPU box
@@ -301,6 +321,10 @@ python steer.py --model Qwen/Qwen2.5-1.5B-Instruct --quant none \
 python steer.py --model Qwen/Qwen2.5-1.5B-Instruct --quant none \
     --directions /tmp/rollout_directions.npz --layer 18 --coeffs 0.0 0.5 1.0 2.0 3.0 4.0 \
     --gate_activations /tmp/rollout_activations.npz
+
+# 9. Proof-of-concept: direct before/after generations on the same prompts
+python demo_steering.py --model Qwen/Qwen2.5-1.5B-Instruct --quant none \
+    --directions /tmp/rollout_directions.npz --layer 18 --coeff 1.0
 ```
 
 `--quant` has three modes:
