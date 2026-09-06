@@ -1,0 +1,8 @@
+model,quant,n_layers,layer,layer_pct,auroc,samples_per_prompt,temperature
+Qwen/Qwen2.5-1.5B-Instruct,none,28,3,10.7,0.6100456621004566,8,0.8
+Qwen/Qwen2.5-1.5B-Instruct,none,28,6,21.4,0.8680365296803654,8,0.8
+Qwen/Qwen2.5-1.5B-Instruct,none,28,9,32.1,0.8703196347031964,8,0.8
+Qwen/Qwen2.5-1.5B-Instruct,none,28,12,42.9,0.8668949771689498,8,0.8
+Qwen/Qwen2.5-1.5B-Instruct,none,28,15,53.6,0.8561643835616438,8,0.8
+Qwen/Qwen2.5-1.5B-Instruct,none,28,18,64.3,0.9235159817351598,8,0.8
+Qwen/Qwen2.5-1.5B-Instruct,none,28,21,75.0,0.8591324200913242,8,0.8

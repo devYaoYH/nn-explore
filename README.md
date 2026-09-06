@@ -154,6 +154,66 @@ question set to get enough natural errors, plus careful separation between
 and is the natural next experiment for whoever picks this repo up next — see
 Future Work.
 
+### 4. Fixing it: training on genuine free-generation rollouts
+
+Directly informed by §3b's diagnosis, we retrained the direction (and gate)
+on the actual deploy-time distribution instead of a proxy for it.
+`collect_rollouts.py` samples **real generations** (`do_sample=True`,
+temperature 0.8, top_p 0.95 — genuinely sampled, not teacher-forced) from
+`build_distractor_dataset()`'s plain + distractor prompts — up to 8 rollouts
+per question — auto-labels each
+rollout correct/incorrect with the same regex ground-truth check `steer.py`
+uses, and records the residual stream at each layer via a forward hook that
+skips the (multi-token) prefill call and keeps only genuinely-generated
+token positions — i.e. actual in-progress generation states, not
+completed-statement snapshots or teacher-forced continuations.
+
+Two representations come out of this per rollout:
+- a **mean-pooled vector** (averaged over every generated position) — the
+  same pooling the ["Detecting Strategic Deception"](https://alignment.anthropic.com/2024/deception-probes/)
+  paper uses over generation-token activations — used to train a
+  rollout-level probe (held out **by question**, same grouped-split
+  discipline as §3a) and to compute the diff-of-means direction.
+- **per-token rows** (every generated position individually, each inheriting
+  the rollout's sequence-level label) — used to fit a live gate that's
+  actually evaluated on the same kind of activation it'll see at
+  steering-time, unlike §3b's gate.
+
+Since multiple rollouts are sampled per question, a question where the
+model's answer genuinely varies across samples yields a matched,
+**on-policy contrastive pair for that exact question** — so besides the
+usual pooled diff-of-means (all correct rollouts vs. all incorrect ones,
+across *different* questions), we also compute a paired diff-of-means
+restricted to just those matched-pair questions and average the per-question
+differences — the same matched-pair logic CAA (Rimsky et al. 2023) uses,
+now made on-policy.
+
+On Qwen2.5-1.5B (592 rollouts from 74 prompts), the mean-pooled rollout-level
+probe reaches **AUROC 0.86–0.92 across layers 6–21** on a held-out,
+by-question split — a real signal, not the construction artifact §3a
+diagnosed:
+
+![Rollout probe AUROC by layer](results/figures/rollout_probe_auroc_by_layer.png)
+
+Layer 18 (AUROC 0.924) is the peak, which is why it's the layer used below.
+Rerunning `steer.py`'s exact distractor evaluation with this direction
+(layer 18, paired diff-of-means) in place of the old completed-statement
+direction:
+
+![Rollout steering sweep](results/figures/rollout_steering_sweep.png)
+
+| Approach | Result |
+|---|---|
+| Unconditional, coeff=1.0 | Distractor accuracy **31/37 → 35/37**, confusion **4/37 → 1/37**, plain-prompt accuracy unchanged (36/37). Degrades past coeff≈1.5, collapses by coeff=3 — same fluency-collapse shape as §3b, just at a different, now-*useful* coefficient range. |
+| Gated (fires on **7–8%** of forward calls, vs. 43–53% for §3b's out-of-distribution gate) | Monotonic improvement across the whole tested range (coeff 0→4), reaching confusion **0/37** at coeff=4 with plain-prompt accuracy pinned at 36/37 throughout — never collapses in the tested range, trading a slightly lower ceiling for robustness. |
+
+This confirms §3b's diagnosis directly: the causal mechanism (§2) always
+worked; what was missing was training the direction on the deploy-time
+distribution instead of a proxy for it. The gate's fire-rate drop alone
+(43–53% → 7–8%) is a strong independent signal that it's now well-calibrated
+rather than just luckily thresholded. Still a toy-scale result (37 examples,
+one model, one layer) — see Future Work for what's next.
+
 ## Repo layout
 
 ```
@@ -164,6 +224,7 @@ causal_patch.py                subject-token causal patching sweep across layers
 extract_continuation_probe.py  per-token probing on forced (teacher-forced) continuations
 analyze_position_breakdown.py  per-position AUROC breakdown (why (3a)'s pooled AUROC is misleading)
 steer.py                       live activation steering during generation + distractor evaluation harness
+collect_rollouts.py            sample real generations, auto-label, extract on-policy activations + directions (§4)
 plot_results.py                regenerate results/figures/*.png from results/*.csv
 results/                       *.csv result tables and the plots above
 setup.sh                       one-shot environment bootstrap for a new GPU box
@@ -229,6 +290,17 @@ python steer.py --model Qwen/Qwen2.5-1.5B-Instruct --quant none \
 python steer.py --model Qwen/Qwen2.5-1.5B-Instruct --quant none \
     --directions /tmp/directions.npz --layer 21 --coeffs 0.0 0.5 1.0 2.0 4.0 \
     --gate_activations /tmp/activations.npz
+
+# 8. Collect on-policy free-generation rollouts and steer with the fixed direction (§4)
+python collect_rollouts.py --model Qwen/Qwen2.5-1.5B-Instruct --quant none \
+    --samples_per_prompt 8 --max_new_tokens 16 --layers 18 \
+    --out /tmp/rollout_activations.npz --directions_out /tmp/rollout_directions.npz \
+    --results_csv results/rollout_probe.csv
+python steer.py --model Qwen/Qwen2.5-1.5B-Instruct --quant none \
+    --directions /tmp/rollout_directions.npz --layer 18 --coeffs 0.0 0.5 1.0 1.5 2.0 3.0
+python steer.py --model Qwen/Qwen2.5-1.5B-Instruct --quant none \
+    --directions /tmp/rollout_directions.npz --layer 18 --coeffs 0.0 0.5 1.0 2.0 3.0 4.0 \
+    --gate_activations /tmp/rollout_activations.npz
 ```
 
 `--quant` has three modes:
@@ -273,29 +345,32 @@ when you're ready to move past pipeline validation.
 
 ## Future work
 
-The natural next experiment, informed directly by §3's negative result: train
-the steering direction and any live gate on **genuine intermediate generation
-states** rather than post-hoc-labeled complete statements. Concretely:
+§4 closed the loop on §3's negative result — on-policy rollout training does
+fix live steering — but it's still a toy-scale demonstration. Natural next
+steps:
 
-1. Build a broader, genuinely mixed-difficulty factual question set (arithmetic
-   difficulty is the safest lever for controllable error rate — no risk of
-   the dataset author misremembering a real-world fact; harder chemistry/
-   geography facts can supplement it).
-2. Let the model actually **generate** (sampled, not forced) answers, and
-   auto-verify each against a known answer key.
-3. Extract activations from those real generation trajectories — specifically
-   at the pre-answer position, across many *different* questions (not a
-   matched-prefix pair) — and check whether "will this generation turn out
-   correct" is linearly decodable there. This is the correct test of whether
-   a genuine pre-commitment ("does the model know this") signal exists; §3a's
-   null result does not answer this question, for the reasons discussed above.
-4. If it is decodable, retrain the steering direction/gate on that same
-   distribution and rerun the `steer.py` distractor evaluation.
-
-Also worth doing regardless of the above: replicate §3 at the 32B scale (all
-of §3's results are on Qwen2.5-1.5B only, for iteration speed) to check
-whether the distribution-mismatch failure mode is scale-invariant or whether
-a larger model's steering vectors transfer better across distributions.
+1. **Replicate §4 at 32B scale.** All of §3–§4's results are on Qwen2.5-1.5B
+   only, for iteration speed. Check whether the fix holds, and whether a
+   larger model needs a smaller/larger relative coefficient or fewer/more
+   samples per prompt to get enough matched contrastive pairs.
+2. **More matched pairs.** Only 8 of the ~52 training-split prompts yielded
+   both a correct and incorrect rollout at `samples_per_prompt=8`; either
+   raising the sample count or widening the fact set (more long-tail
+   capitals, or a genuinely open-ended trivia set) would give the paired
+   diff-of-means a lower-variance estimate.
+3. **Beyond induced distractors.** The whole eval set relies on a
+   confidently-asserted false premise to induce errors. Check whether the
+   same recipe (real rollouts, auto-verified, mean-pooled + paired
+   diff-of-means) also produces a working steering direction for
+   *naturally occurring* hallucinations (no induced distractor context) —
+   this needs a harder/larger question set to get a usable natural error
+   rate, but is a more realistic target than entity-confusion.
+4. Swap the toy capitals/elements/math dataset for something closer to a real
+   research question — e.g. the honest-vs-deceptive instruction-following
+   setup from
+   ["Detecting Strategic Deception Using Linear Probes"](https://alignment.anthropic.com/2024/deception-probes/) —
+   now that the full pipeline (rollout collection → on-policy direction →
+   live steering) is validated end-to-end on a toy task.
 
 ## Environment notes (read before bootstrapping a new instance)
 

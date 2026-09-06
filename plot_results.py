@@ -37,6 +37,27 @@ def plot_probe_auroc():
     print(f"Saved {out}")
 
 
+def plot_rollout_probe_auroc():
+    path = os.path.join(RESULTS_DIR, "rollout_probe.csv")
+    if not os.path.exists(path):
+        return
+    df = pd.read_csv(path)
+    fig, ax = plt.subplots(figsize=(7, 4.5))
+    for model, g in df.groupby("model"):
+        g = g.sort_values("layer_pct")
+        ax.plot(g["layer_pct"], g["auroc"], marker="o", label=SHORT_NAMES.get(model, model))
+    ax.axhline(0.5, color="gray", linestyle="--", linewidth=1, label="chance")
+    ax.set_xlabel("Layer depth (% of network)")
+    ax.set_ylabel("Rollout-level probe AUROC (mean-pooled, held out by question)")
+    ax.set_title("On-policy free-generation rollouts: real signal, not a construction artifact")
+    ax.set_ylim(0.4, 1.03)
+    ax.legend()
+    fig.tight_layout()
+    out = os.path.join(FIG_DIR, "rollout_probe_auroc_by_layer.png")
+    fig.savefig(out, dpi=150)
+    print(f"Saved {out}")
+
+
 def plot_causal_patch():
     df = pd.read_csv(os.path.join(RESULTS_DIR, "causal_patch.csv"))
     models = df["model"].unique()
@@ -79,8 +100,8 @@ def plot_position_breakdown():
     print(f"Saved {out}")
 
 
-def plot_steering_sweep():
-    path = os.path.join(RESULTS_DIR, "steering_sweep.csv")
+def _plot_steering_sweep_file(csv_name, out_name, title):
+    path = os.path.join(RESULTS_DIR, csv_name)
     if not os.path.exists(path):
         return
     df = pd.read_csv(path)
@@ -94,11 +115,30 @@ def plot_steering_sweep():
         ax.set_title("Gated" if gated else "Unconditional (every token)")
         ax.legend(fontsize=8)
     axes[0].set_ylabel("Rate")
-    fig.suptitle("Live steering sweep: no coefficient improves distractor accuracy (Qwen2.5-1.5B, layer 21)")
+    fig.suptitle(title)
     fig.tight_layout()
-    out = os.path.join(FIG_DIR, "steering_sweep.png")
+    out = os.path.join(FIG_DIR, out_name)
     fig.savefig(out, dpi=150)
     print(f"Saved {out}")
+
+
+def plot_steering_sweep():
+    """Original attempt: direction trained on completed-statement /
+    forced-continuation activations, applied live -- fails (train/deploy
+    mismatch), see README section 3b."""
+    _plot_steering_sweep_file(
+        "steering_sweep.csv", "steering_sweep.png",
+        "Live steering sweep: no coefficient improves distractor accuracy (Qwen2.5-1.5B, layer 21)",
+    )
+
+
+def plot_rollout_steering_sweep():
+    """Fixed version: direction trained on genuine free-generation rollouts
+    (collect_rollouts.py) -- works, see README section 4."""
+    _plot_steering_sweep_file(
+        "rollout_steering_sweep.csv", "rollout_steering_sweep.png",
+        "On-policy rollout-trained direction: distractor accuracy 31/37->35/37, no fluency cost (layer 18)",
+    )
 
 
 if __name__ == "__main__":
@@ -106,3 +146,5 @@ if __name__ == "__main__":
     plot_causal_patch()
     plot_position_breakdown()
     plot_steering_sweep()
+    plot_rollout_probe_auroc()
+    plot_rollout_steering_sweep()
