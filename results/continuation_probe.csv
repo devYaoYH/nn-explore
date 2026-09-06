@@ -1,0 +1,8 @@
+model,quant,n_layers,layer,layer_pct,auroc,diff_of_means_norm
+Qwen/Qwen2.5-1.5B-Instruct,none,28,3,10.7,0.5225237636038023,1.040835
+Qwen/Qwen2.5-1.5B-Instruct,none,28,6,21.4,0.5961564953850393,1.4299272
+Qwen/Qwen2.5-1.5B-Instruct,none,28,9,32.1,0.6504339440694311,2.5369134
+Qwen/Qwen2.5-1.5B-Instruct,none,28,12,42.9,0.7109794737567157,2.9810374
+Qwen/Qwen2.5-1.5B-Instruct,none,28,15,53.6,0.7249621159939386,4.2061625
+Qwen/Qwen2.5-1.5B-Instruct,none,28,18,64.3,0.7205537952886072,4.2371855
+Qwen/Qwen2.5-1.5B-Instruct,none,28,21,75.0,0.7228957156633145,5.381625

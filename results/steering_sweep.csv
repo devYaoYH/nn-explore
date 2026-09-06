@@ -1,0 +1,15 @@
+model,layer,gated,coeff,plain_correct,plain_total,distractor_correct,distractor_total,confused,gate_fire_rate
+Qwen/Qwen2.5-1.5B-Instruct,21,false,0.0,36,37,31,37,4,
+Qwen/Qwen2.5-1.5B-Instruct,21,false,0.1,35,37,31,37,4,
+Qwen/Qwen2.5-1.5B-Instruct,21,false,0.25,35,37,30,37,5,
+Qwen/Qwen2.5-1.5B-Instruct,21,false,0.5,34,37,29,37,6,
+Qwen/Qwen2.5-1.5B-Instruct,21,false,0.75,34,37,29,37,6,
+Qwen/Qwen2.5-1.5B-Instruct,21,false,1.0,35,37,28,37,6,
+Qwen/Qwen2.5-1.5B-Instruct,21,false,2.0,31,37,25,37,7,
+Qwen/Qwen2.5-1.5B-Instruct,21,false,4.0,14,37,13,37,2,
+Qwen/Qwen2.5-1.5B-Instruct,21,false,8.0,0,37,0,37,0,
+Qwen/Qwen2.5-1.5B-Instruct,21,true,0.0,36,37,31,37,4,0.0
+Qwen/Qwen2.5-1.5B-Instruct,21,true,0.5,36,37,31,37,4,42.9
+Qwen/Qwen2.5-1.5B-Instruct,21,true,1.0,36,37,31,37,4,42.5
+Qwen/Qwen2.5-1.5B-Instruct,21,true,2.0,36,37,31,37,3,46.8
+Qwen/Qwen2.5-1.5B-Instruct,21,true,4.0,35,37,26,37,3,52.9

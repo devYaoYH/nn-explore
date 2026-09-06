@@ -58,6 +58,51 @@ def plot_causal_patch():
     print(f"Saved {out}")
 
 
+def plot_position_breakdown():
+    path = os.path.join(RESULTS_DIR, "position_breakdown.csv")
+    if not os.path.exists(path):
+        return
+    df = pd.read_csv(path)
+    fig, ax = plt.subplots(figsize=(7, 4.5))
+    for model, g in df.groupby("model"):
+        g = g.sort_values("rel_pos")
+        ax.plot(g["rel_pos"], g["auroc"], marker="o", label=model)
+    ax.axhline(0.5, color="gray", linestyle="--", linewidth=1, label="chance")
+    ax.set_xlabel("Token position, relative to end of continuation (-1 = last token)")
+    ax.set_ylabel("Train-set probe AUROC")
+    ax.set_title("Forced-continuation: signal only appears at/after the answer token")
+    ax.set_ylim(0.4, 1.03)
+    ax.legend()
+    fig.tight_layout()
+    out = os.path.join(FIG_DIR, "position_breakdown.png")
+    fig.savefig(out, dpi=150)
+    print(f"Saved {out}")
+
+
+def plot_steering_sweep():
+    path = os.path.join(RESULTS_DIR, "steering_sweep.csv")
+    if not os.path.exists(path):
+        return
+    df = pd.read_csv(path)
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.5), sharey=True)
+    for ax, gated in zip(axes, [False, True]):
+        g = df[df["gated"] == gated].sort_values("coeff")
+        ax.plot(g["coeff"], g["plain_correct"] / g["plain_total"], marker="o", label="plain prompt accuracy")
+        ax.plot(g["coeff"], g["distractor_correct"] / g["distractor_total"], marker="o", label="distractor prompt accuracy")
+        ax.plot(g["coeff"], g["confused"] / g["distractor_total"], marker="o", label="confused (matched distractor)")
+        ax.set_xlabel("Steering coefficient")
+        ax.set_title("Gated" if gated else "Unconditional (every token)")
+        ax.legend(fontsize=8)
+    axes[0].set_ylabel("Rate")
+    fig.suptitle("Live steering sweep: no coefficient improves distractor accuracy (Qwen2.5-1.5B, layer 21)")
+    fig.tight_layout()
+    out = os.path.join(FIG_DIR, "steering_sweep.png")
+    fig.savefig(out, dpi=150)
+    print(f"Saved {out}")
+
+
 if __name__ == "__main__":
     plot_probe_auroc()
     plot_causal_patch()
+    plot_position_breakdown()
+    plot_steering_sweep()

@@ -45,6 +45,9 @@ def main():
     parser.add_argument("--out", default="activations.npz")
     parser.add_argument("--results_csv", default=None,
                          help="If set, append per-layer AUROC rows to this CSV.")
+    parser.add_argument("--directions_out", default=None,
+                         help="If set, save a {layer: diff-of-means vector} .npz here -- "
+                              "the generic truthfulness direction used for steering.")
     args = parser.parse_args()
 
     if args.quant == "none":
@@ -88,6 +91,7 @@ def main():
 
     print("\n--- Per-layer probe AUROC (held-out test split) ---")
     results = {}
+    directions = {}
     for l in target_layers:
         X = acts[l]
         X_train, X_test, y_train, y_test = train_test_split(
@@ -97,10 +101,20 @@ def main():
         preds = clf.predict_proba(X_test)[:, 1]
         auroc = roc_auc_score(y_test, preds)
         results[l] = auroc
-        print(f"Layer {l:3d}: AUROC = {auroc:.4f}")
+
+        # Generic "truthfulness" direction for steering: difference of class
+        # means (train split only), NOT the LR weight vector -- see README
+        # for why diff-of-means is preferred for steering vs. classification.
+        directions[l] = X_train[y_train == 1].mean(axis=0) - X_train[y_train == 0].mean(axis=0)
+
+        print(f"Layer {l:3d}: AUROC = {auroc:.4f}  |diff-of-means| = {np.linalg.norm(directions[l]):.3f}")
 
     best_layer = max(results, key=results.get)
     print(f"\nBest layer: {best_layer} (AUROC={results[best_layer]:.4f})")
+
+    if args.directions_out:
+        np.savez(args.directions_out, **{f"layer_{l}": directions[l] for l in target_layers})
+        print(f"Saved steering directions to {args.directions_out}")
 
     if args.results_csv:
         write_header = not os.path.exists(args.results_csv)

@@ -74,17 +74,100 @@ token itself (standard "causal tracing", as in Meng et al.'s ROME paper) is
 what actually isolates the causal effect. See `causal_patch.py` for the
 token-alignment logic.
 
+### 3. Live steering: can we push generation toward truthfulness in real time?
+
+The natural follow-up question: since a single forward pass already causally
+determines its own output (§2), can we intervene *live*, mid-generation, to
+correct a model that's about to say something wrong — not just in an offline
+oracle-patching demo, but as an actual online steering mechanism? Short
+answer: we tried the obvious approach and it doesn't work, for an instructive
+reason. Full writeup, including a corrected finding from an earlier
+mis-designed experiment, below.
+
+**3a. Forced-continuation per-token probing (and a correction).** `dataset.py`'s
+`build_steering_dataset()` extends the true/false template into full
+teacher-forced continuations (e.g. `"Question: What is the capital of
+France?\nAnswer:"` + `" The capital of France is Paris."` vs. `"...Berlin."`),
+and `extract_continuation_probe.py` probes *every token position* of the
+continuation, not just the last one. The pooled AUROC comes out much lower
+than the static-statement result (~0.72 vs. ~0.96) — but breaking it down by
+position relative to the end of the continuation shows why:
+
+![Position breakdown](results/figures/position_breakdown.png)
+
+Every position before the answer word sits at exactly chance. **This is a
+construction artifact, not a finding about the model.** The true and false
+continuations share an identical token prefix up to the branch point (`"...is
+Paris."` vs `"...is Berlin."` — everything before "Paris"/"Berlin" is the same
+tokens either way), so there is *by construction* zero information available
+at those positions for a probe to find, regardless of what the model
+internally "knows." An earlier pass at this analysis concluded from this that
+"the model doesn't know the answer before committing to it" — that conclusion
+was wrong; the null result is guaranteed by the matched-prefix design and says
+nothing about the model's actual internal state. Real pre-commitment signal
+(if it exists) has to come from genuine variation across *different*
+questions, not an artificially matched prefix — see Future Work.
+
+**3b. Live steering attempt.** Despite (3a), we already know from §2 that
+*something* causal exists to intervene on — so we tried it anyway, live,
+using `steer.py`: a forward hook on a mid-to-late layer that adds a generic
+"truthfulness" direction (difference-of-means between true/false statement
+activations, computed by `extract_and_probe.py --directions_out`) to the
+residual stream on every decoding step. To get a genuine error case to correct
+(the model gets essentially all of our original 20 well-known capitals right
+even under provocation), `dataset.py`'s `build_distractor_dataset()` primes
+each question with a confidently-asserted false premise about a *different*
+country's capital (e.g. *"Context: I just learned that the capital of France
+is Berlin.\nQuestion: What is the capital of France?"*) — a known, reproducible
+way to induce entity-confusion errors, over a broadened set of 37 capitals
+(20 common + 17 deliberately less-known ones, to get baseline uncertainty
+above zero).
+
+![Steering sweep](results/figures/steering_sweep.png)
+
+| Approach | Result |
+|---|---|
+| Unconditional (every token) | Monotonic collapse — confusion rate rises slightly (11%→19%) before **total incoherence** by coeff=8 (output degenerates to `"The Capital To Its It The The The..."`). No coefficient ever improves accuracy. |
+| Gated (live probe decides per-token) | Gate fires on 43-53% of tokens — far too promiscuous to be "targeted" — and shows no accuracy improvement at any coefficient tested. |
+
+**Diagnosis:** the direction/classifier was trained on exactly one
+distribution — the last token of a *complete* statement, where "is this claim
+true or false" is a well-posed question. We applied it to a completely
+different distribution — the last token of an *in-progress, incomplete*
+phrase (including tokens like `"The"`, `"capital"`, `"of"` that have no claim
+content yet to judge). Its behavior there is uncalibrated noise, not a
+meaningful signal — confirmed by the direction's norm (29.1) already being
+~29% of the layer's typical activation norm (~99), meaning even the smallest
+tested coefficient was a large, indiscriminate perturbation on every single
+token regardless of relevance. More coefficient/threshold tuning won't fix a
+train/deploy distribution mismatch.
+
+**What would actually be needed:** train the direction (and any live gate) on
+activations from the *actual* target distribution — genuine intermediate
+generation states, not post-hoc-labeled complete statements. Concretely: let
+the model *actually generate* (sampled, not forced) answers to a broad
+mixed-difficulty question set, auto-verify correctness against a known answer
+key, and extract activations from those real generation trajectories. This is
+a materially bigger lift (needs a much larger, harder, auto-verifiable
+question set to get enough natural errors, plus careful separation between
+"is a mistake about to happen" detection and the resulting steering vector)
+and is the natural next experiment for whoever picks this repo up next — see
+Future Work.
+
 ## Repo layout
 
 ```
-dataset.py            synthetic true/false factual-statement dataset (104 examples)
-inspect_model.py       quick architecture sanity check for a new model (layer count, module names)
-extract_and_probe.py   extract last-token residual activations, train per-layer probes
-causal_patch.py        subject-token causal patching sweep across layers
-plot_results.py        regenerate results/figures/*.png from results/*.csv
-results/               probe_auroc.csv, causal_patch.csv, and the plots above
-setup.sh               one-shot environment bootstrap for a new GPU box
-requirements.txt       pinned dependency versions
+dataset.py                     true/false statements, forced-continuation, and distractor datasets
+inspect_model.py               quick architecture sanity check for a new model (layer count, module names)
+extract_and_probe.py           extract last-token residual activations, train per-layer probes + steering directions
+causal_patch.py                subject-token causal patching sweep across layers
+extract_continuation_probe.py  per-token probing on forced (teacher-forced) continuations
+analyze_position_breakdown.py  per-position AUROC breakdown (why (3a)'s pooled AUROC is misleading)
+steer.py                       live activation steering during generation + distractor evaluation harness
+plot_results.py                regenerate results/figures/*.png from results/*.csv
+results/                       *.csv result tables and the plots above
+setup.sh                       one-shot environment bootstrap for a new GPU box
+requirements.txt               pinned dependency versions
 ```
 
 ## Setup
@@ -130,6 +213,22 @@ python causal_patch.py --model unsloth/Qwen2.5-32B-Instruct-bnb-4bit --quant pre
 
 # 5. Regenerate the figures above
 python plot_results.py
+
+# 6. Forced-continuation per-token probing + position breakdown (§3a)
+python extract_continuation_probe.py --model Qwen/Qwen2.5-1.5B-Instruct --quant none \
+    --out /tmp/cont_activations.npz --results_csv results/continuation_probe.csv
+python analyze_position_breakdown.py --activations /tmp/cont_activations.npz --layer 15 \
+    --model_label "Qwen2.5-1.5B" --results_csv results/position_breakdown.csv
+
+# 7. Save a generic steering direction, then try live steering (§3b)
+python extract_and_probe.py --model Qwen/Qwen2.5-1.5B-Instruct --quant none \
+    --out /tmp/activations.npz --directions_out /tmp/directions.npz
+python steer.py --model Qwen/Qwen2.5-1.5B-Instruct --quant none \
+    --directions /tmp/directions.npz --layer 21 --coeffs 0.0 0.5 1.0 2.0 4.0
+# ...or gated (fires only when a live probe flags risk -- still doesn't help, see §3b):
+python steer.py --model Qwen/Qwen2.5-1.5B-Instruct --quant none \
+    --directions /tmp/directions.npz --layer 21 --coeffs 0.0 0.5 1.0 2.0 4.0 \
+    --gate_activations /tmp/activations.npz
 ```
 
 `--quant` has three modes:
@@ -148,18 +247,55 @@ probing, and patching code is model- and dataset-agnostic as long as the
 model exposes `.model.layers[i]` and `.lm_head` (true of most Llama-family /
 Qwen-family causal LMs).
 
-## Dataset
+## Dataset builders
 
-`dataset.py` generates 104 templated true/false statement pairs across four
-factual categories (country capitals, chemical symbols, small multiplication
-facts, animal taxonomic classes), with the false variant swapping in a
-plausible-but-wrong value from the same category so the *only* thing that
-differs between a true/false pair is truth value, not surface form or
-sentence structure. This is a toy stand-in for a real contrastive dataset —
-swap in something closer to your actual research question (e.g. the
-honest-vs-deceptive instruction-following setup from Anthropic's
+`dataset.py` generates true/false statements across four factual categories
+(country capitals, chemical symbols, small multiplication facts, animal
+taxonomic classes), with the false variant swapping in a plausible-but-wrong
+value from the same category so the *only* thing that differs is truth value,
+not surface form or sentence structure. It's grown four generators as the
+experiments progressed:
+
+- `build_dataset()` — 104 static true/false statement pairs (§1, §2 inputs).
+- `build_steering_dataset()` — the same facts recast as `(prompt,
+  true_continuation, false_continuation)` triples for teacher-forcing (§3a).
+- `build_distractor_dataset()` — 37 capital-city questions (20 common +
+  `HARD_CAPITALS`, 17 deliberately less-known ones) each paired with a
+  false-premise distractor context, for the live steering evaluation (§3b).
+- `CAPITALS` / `HARD_CAPITALS` / `ELEMENTS` / `MATH` / `ANIMALS` — the
+  underlying fact lists all four generators draw from.
+
+This is a toy stand-in for a real contrastive dataset — swap in something
+closer to your actual research question (e.g. the honest-vs-deceptive
+instruction-following setup from Anthropic's
 ["Detecting Strategic Deception Using Linear Probes"](https://alignment.anthropic.com/2024/deception-probes/))
 when you're ready to move past pipeline validation.
+
+## Future work
+
+The natural next experiment, informed directly by §3's negative result: train
+the steering direction and any live gate on **genuine intermediate generation
+states** rather than post-hoc-labeled complete statements. Concretely:
+
+1. Build a broader, genuinely mixed-difficulty factual question set (arithmetic
+   difficulty is the safest lever for controllable error rate — no risk of
+   the dataset author misremembering a real-world fact; harder chemistry/
+   geography facts can supplement it).
+2. Let the model actually **generate** (sampled, not forced) answers, and
+   auto-verify each against a known answer key.
+3. Extract activations from those real generation trajectories — specifically
+   at the pre-answer position, across many *different* questions (not a
+   matched-prefix pair) — and check whether "will this generation turn out
+   correct" is linearly decodable there. This is the correct test of whether
+   a genuine pre-commitment ("does the model know this") signal exists; §3a's
+   null result does not answer this question, for the reasons discussed above.
+4. If it is decodable, retrain the steering direction/gate on that same
+   distribution and rerun the `steer.py` distractor evaluation.
+
+Also worth doing regardless of the above: replicate §3 at the 32B scale (all
+of §3's results are on Qwen2.5-1.5B only, for iteration speed) to check
+whether the distribution-mismatch failure mode is scale-invariant or whether
+a larger model's steering vectors transfer better across distributions.
 
 ## Environment notes (read before bootstrapping a new instance)
 
